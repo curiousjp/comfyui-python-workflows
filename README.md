@@ -33,6 +33,10 @@ PS 11/02/2024 17:07:11> ..\python_embeded\python.exe C:\Users\curious\Documents\
 
 This loads our images, detects their faces, and rediffuses them with a four stage, 20 step process. In this case, you get two images out for each image in - one using the provided prompt, `green_eyes`, and another with a blank prompt.
 
+Finally, we cherrypick a result we like.
+
+![image](https://github.com/user-attachments/assets/40ef9599-4554-4581-b42b-b79eeb859bc7)
+
 Each script has a large number of command line switches that let you tune their behaviour, which the rest of this readme file deals with.
 
 # image_from_text.py
