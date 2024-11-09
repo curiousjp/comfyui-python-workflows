@@ -53,6 +53,8 @@ Here, we take our source image, run a wd14 tagger over it, throw away 50% of the
 
 (Note, the loss of 1boy in the original tags means the model will now almost certainly drift to producing a female character due to training bias.) We then rediffuse the original image from step 4, detailing the face with a single detailer pipe. We then loop over this process ten times, choosing a new checkpoint each time. 
 
+![remake](https://github.com/user-attachments/assets/cda6370f-4dde-4f80-85d8-cce6da766b32)
+
 Each of the three scripts has a large number of command line switches that let you tune their behaviour, which the rest of this readme file deals with.
 
 # image_from_text.py
