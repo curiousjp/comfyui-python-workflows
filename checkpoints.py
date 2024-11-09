@@ -33,4 +33,5 @@ everything_d = {x[0]: x for x in everything}
 # paths for llm components, if you use them
 llama_model_path = '/mnt/z/comfy/ComfyUI/custom_nodes/ComfyUI-LLaVA-Captioner/models/llama/llava-v1.5-7b-Q4_K.gguf'
 llama_clip_path = '/mnt/z/comfy/ComfyUI/custom_nodes/ComfyUI-LLaVA-Captioner/models/llama/llava-v1.5-7b-mmproj-Q4_0.gguf'
+dtg_model_path = '/mnt/z/comfy/models/DanTagGen-delta-rev2/ggml-model-f16.gguf'
 

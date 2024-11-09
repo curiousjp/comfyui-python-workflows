@@ -309,10 +309,8 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     common.log(args)
-    if args.checkpoints == ['*']:
-        checkpoint_list = [None] # <-- autochoice at runtime
-    else:
-        checkpoint_list = [checkpoints.everything_d[x] for x in args.checkpoints]
+
+    checkpoint_list = [checkpoints.everything_d[x] if x != '*' else None for x in args.checkpoints ]
     
     if args.prompts:
         input_prompts = args.prompts

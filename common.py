@@ -1,4 +1,5 @@
 # various stock functions
+from collections.abc import MutableSequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from PIL import Image, ImageOps
@@ -12,6 +13,141 @@ import re
 import sys
 import time
 import torch
+
+# a function to store prompt text and account for weighting
+
+# thank you to @toyxyz for this idea, taken from their repo: https://github.com/toyxyz/a1111-sd-webui-dtg_comfyui/tree/main
+TIER_1_TAGS = set([
+    'masterpiece', 'best quality', 'great quality', 'good quality', 'normal quality', 'low quality', 'worse quality',
+    'very aesthetic', 'aesthetic', 'displeasing', 'very displeasing',
+    'newest', 'recent', 'mid', 'early', 'old',
+])
+TIER_2_TAGS = set([
+    '1girl', '2girls', '3girls', '4girls', '5girls', '6+girls', 'multiple girls',
+    '1boy', '2boys', '3boys', '4boys', '5boys', '6+boys', 'multiple boys',
+    'male focus', 'female focus',
+    '1other', '2others', '3others', '4others', '5others', '6+others', 'multiple others',
+])
+class WeightedList(MutableSequence):
+    # class method
+    def _sort_order(t):
+        if t in TIER_1_TAGS: return 1
+        if t in TIER_2_TAGS: return 2
+        return 3
+    
+    def __init__(self, p = None, use_underscore = True):
+        self.items = []  # Store tuples of (key, weight)
+        if use_underscore:
+            self._use_underscore_l = lambda x: x.replace(' ', '_')
+        else:
+            self._use_underscore_l = lambda x: x.replace('_', ' ')
+        if isinstance(p, str):
+            self.parse(p)
+        if isinstance(p, WeightedList):
+            self.parse(p.to_string())
+
+    def parse(self, input_str):
+        # we will normalise the input string to make it a bit simpler to parse
+        modified = input_str.strip().replace('\\(', 'TAGOPENBRACKET').replace('\\)', 'TAGCLOSEBRACKET')
+        modified = modified.replace('[', '(')
+        modified = re.sub(r'(\D)\]', r'\1:0.9)', modified)
+        modified = re.sub(r'(\D)\)', r'\1:1.1)', modified)
+        if modified.count('(') != modified.count(')'):
+            raise ValueError(f'unbalanced parentheses in modified prompt string: {modified}')
+        # Start parsing with an implicit outermost weight of 1
+        self._parse_with_weight(modified, 1)
+
+    def _parse_with_weight(self, input_str, outer_weight):
+        while '(' in input_str:
+            group_start = input_str.index('(')
+            group_end = None
+            
+            brace_count = 1
+            for idx in range(group_start + 1, len(input_str)):
+                if input_str[idx] == '(':
+                    brace_count += 1
+                if input_str[idx] == ')':
+                    brace_count -= 1
+                if brace_count == 0:
+                    group_end = idx
+                    break
+            
+            if group_end == None:
+                raise ValueError(f'could not locate the closing brace matching the opening brace at idx {group_start} of {input_str}')
+
+            group_content = input_str[group_start + 1:group_end]
+            group_weight_pos = group_content.rindex(':')
+            
+            group_content_text = group_content[:group_weight_pos].strip()
+            group_content_weight = float(group_content[group_weight_pos+1:])
+            combined_weight = outer_weight * group_content_weight
+            self._parse_with_weight(group_content_text, combined_weight)
+            input_str = input_str[:group_start] + input_str[group_end+1:]
+
+        # at this point, input_string should be pure text with no groups
+        tokens = [x.strip(',').strip().replace('TAGOPENBRACKET', '\\(').replace('TAGCLOSEBRACKET', '\\)') for x in input_str.split(',')]
+        tokens = [self._use_underscore_l(x) for x in tokens if x]
+        for token in tokens:
+            self.append((token, outer_weight))
+
+    def get_keys(self, suppress_lora = False):
+        """Return a list of all keys in the order they appear."""
+        return [k for k, _ in self.items if (not suppress_lora or not k.startswith('<lora:'))]
+
+    def consolidate_keys(self, func):
+        """Make all keys unique by consolidating weights of duplicates using func."""
+        weight_map = {}
+        for key, weight in self.items:
+            if key in weight_map:
+                weight_map[key].append(weight)
+            else:
+                weight_map[key] = [weight]
+        
+        # Apply the function to the list of weights for each key
+        self.items = [(k, func(v)) for k, v in weight_map.items()]
+
+    def __getitem__(self, index):
+        return self.items[index]
+
+    def __setitem__(self, index, value):
+        self.items[index] = value
+
+    def __delitem__(self, index):
+        del self.items[index]
+
+    def insert(self, index, value):
+        self.items.insert(index, value)
+
+    def __len__(self):
+        return len(self.items)
+
+    def __contains__(self, key):
+        key = self._use_underscore_l(key)
+        return any(item[0] == key for item in self.items)
+
+    def __repr__(self):
+        return self.to_string()
+    
+    def sort(self, key = None, reverse = True):
+        if key is None:
+            self.items.sort(key = lambda x: WeightedList._sort_order(x), reverse=reverse)
+        else:
+            self.items.sort(key = key, reverse = reverse)
+
+    def to_string(self, suppress_lora = False):
+        parts = []
+        for key, weight in self.items:
+            if suppress_lora and key.startswith('<lora:'):
+                continue
+            if weight != 1:
+                parts.append(f'({key}:{weight})')
+            else:
+                parts.append(key)
+        return ', '.join(parts).strip().strip('.,')
+
+
+    def to_string_weightless(self, suppress_lora = False):
+        return ', '.join(x for x in self.get_keys() if (not suppress_lora or not x.startswith('<lora:')))
 
 # miscellaneous functions and a class to do with logging or silencing noisy components
 def log(message):
@@ -274,7 +410,6 @@ def args_parse_bounding_box(value):
             width, height = map(int, size.split('+'))
             boxes.append((left, top, width, height))
         except:
-            stock.log(f'xx error parsing bbox {part}')
+            log(f'xx error parsing bbox {part}')
             pass
     return boxes
-

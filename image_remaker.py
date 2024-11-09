@@ -49,46 +49,11 @@ this_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(this_path)
 import common
 import checkpoints
+import llm
 from common import Silence
+from common import WeightedList
 
-def createLlamaPrompt(prompt, sys_message = None, image_tensor = None):
-    messages = [
-        {'role': 'system', 'content': sys_message or 'You are an assistant who describes the content and composition of images. Describe only what you see in the image, not what you think the image is about. Be factual and literal. Do not use metaphors or similes. Be concise.'},
-        {'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}
-    ]
-    if image_tensor != None:
-        image_url = common.image_tensor_to_png_url(image_tensor)
-        messages[1]['content'].append({'type': 'image_url', 'image_url': image_url})
-    return messages
-
-def runLlamaPromptThread(messages, connection, temperature = 0.3):
-    from llama_cpp import Llama
-    from llama_cpp.llama_chat_format import Llava15ChatHandler
-    llm = Llama( 
-        model_path = checkpoints.llama_model_path,
-        chat_handler = Llava15ChatHandler(clip_model_path = checkpoints.llama_clip_path),
-        n_gpu_layers = -1, 
-        n_ctx = 2048,
-        chat_format = "llava-1-5", 
-        seed = -1,
-        logits_all = True, 
-        verbose = False
-    )
-    results = llm.create_chat_completion(max_tokens=200, messages=messages, temperature=temperature)
-    result = random.choice(results['choices'])['message']['content']
-    connection.send(result)
-    connection.close()
-
-def runLlamaPromptWrapper(prompt, sys_message = None, image = None):
-    messages = createLlamaPrompt(prompt, sys_message, image)
-    parent_connector, child_connector = multiprocessing.Pipe()
-    process = multiprocessing.Process(target=runLlamaPromptThread, args=(messages, child_connector, 0.4))
-    process.start()
-    process.join()
-    results = parent_connector.recv()
-    return results
-
-def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], denoise_programs = [(0.4, 1.0)], noise = 0.0, skip_detailing = False, use_llm = False, llm_prompt = None, llm_sysmessage = None, degrade_prompt=0.8, skip_original_face = False, fd_checkpoint = None, use_tagger = True, banlist = [], frontload_tags = ['rating_safe'], frontload_neg = [], mandatory_tags = [], seeds = [-1], additional_detailer_seeds = [], skip = 0, sleep_start = None, sleep_stop = None, output_folder='.', holdfile_path=None, save_ora = False):
+def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], denoise_programs = [(0.4, 1.0)], noise = 0.0, skip_detailing = False, detailer_selector = -1, use_llm = False, llm_prompt = None, llm_sysmessage = None, use_dtg = False, dtg_rating = 'safe', dtg_target = '<|long|>', dtg_temperature = 0.7, degrade_prompt=0.8, skip_original_face = False, fd_checkpoint = None, use_tagger = True, banlist = [], frontload_tags = ['rating_safe'], frontload_neg = [], mandatory_tags = [], seeds = [-1], additional_detailer_seeds = [], skip = 0, sleep_start = None, sleep_stop = None, output_folder='.', holdfile_path=None, save_ora = False):
     with Silence():
         add_extra_model_paths()
         import_custom_and_start()
@@ -128,6 +93,9 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                 checkpoint_tuple = random.choice(list(checkpoints.everything_d.values()))
             checkpoint_shortname, checkpoint, lora, positive_stem, negative_stem, vae_name = checkpoint_tuple
 
+            positive_stem = WeightedList(positive_stem)
+            negative_stem = WeightedList(negative_stem)
+
             child_combinations = len(input_files) * len(from_step) * len(denoise_programs) * len(seeds)
             if(current_index + child_combinations <= skip):
                 common.log(f'** skipping checkpoint {checkpoint_shortname}')
@@ -135,9 +103,9 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                 continue
 
             for cpe in frontload_tags:
-                positive_stem += f', {cpe}'
+                positive_stem.parse(cpe)
             for cpe in frontload_neg:
-                negative_stem += f', {cpe}'
+                negative_stem.parse(cpe)
 
             common.log(f'** loading checkpoint {checkpoint_shortname}')
             # checkpoint
@@ -156,8 +124,8 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
             clip_object.clip_layer(-2)
 
             # 'basic' conditionings for this model
-            positive_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = positive_stem, clip=clip_object)[0], noise)
-            negative_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = negative_stem, clip=clip_object)[0], noise)
+            positive_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = positive_stem.to_string(), clip=clip_object)[0], noise)
+            negative_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = negative_stem.to_string(), clip=clip_object)[0], noise)
           
             for image_fn in input_files:
                 child_combinations = len(from_step) * len(denoise_programs) * len(seeds)
@@ -169,9 +137,12 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                 input_image, metadata = common.load_image_as_image_tensor(image_fn)
                 input_image, image_width, image_height = common.scale_image_to_common_size(input_image)
 
-                with Silence():
-                    if use_tagger:
-                        tags = wd14TaggerClass.tag(
+                positive_prompt_without_stem = WeightedList()
+                negative_prompt_without_stem = WeightedList()
+
+                if use_tagger and not force_prompt:
+                    with Silence():
+                        tagger_tags = wd14TaggerClass.tag(
                             model="wd-v1-4-moat-tagger-v2",
                             threshold=0.35,
                             character_threshold=0.85,
@@ -179,33 +150,58 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                             trailing_comma=False,
                             exclude_tags=','.join(banlist),
                             image=input_image,
-                        )['result'][0][0]
-                    else:
-                        tags = ''
-                
-                if tags and degrade_prompt < 1:
-                    tag_parts = [x.strip() for x in tags.split(',')]
-                    original_length = len(tag_parts)
-                    adjusted_length = int(round(original_length * degrade_prompt))
-                    if adjusted_length < original_length:
-                        common.log(f'** degrading {original_length} tags down to {adjusted_length}')
-                        random.shuffle(tag_parts)
-                        tag_parts = tag_parts[:adjusted_length]
-                        tags = ', '.join(tag_parts)
+                        )['result'][0][0]                   
+                    if tagger_tags:
+                        if degrade_prompt < 1:
+                            tag_parts = [x.strip() for x in tagger_tags.split(',')]
+                            original_length = len(tag_parts)
+                            adjusted_length = int(round(original_length * degrade_prompt))
+                            if adjusted_length < original_length:
+                                common.log(f'** degrading {original_length} tags down to {adjusted_length}')
+                                common.log(f'** - tagger tags were {tagger_tags}')
+                                indexes_to_remove = set(random.sample(range(original_length), original_length - adjusted_length))
+                                tag_parts = [item for idx, item in enumerate(tag_parts) if idx not in indexes_to_remove]
+                                tagger_tags = ', '.join(tag_parts)
+                                common.log(f'** - tagger tags now {tagger_tags}')
+                        positive_prompt_without_stem.parse(tagger_tags)
+                elif force_prompt:
+                    positive_prompt_without_stem.parse(force_prompt)
 
-                if force_prompt:
-                    tags = force_prompt
+                if use_dtg:
+                    results = llm.runDTGPromptWrapper(positive_prompt_without_stem.get_keys(), dtg_rating, image_width, image_height, dtg_target, dtg_temperature)
+                    common.log(f'** dtg returned the following tags, which will replace the originals: {results[1]}')
+                    positive_prompt_without_stem = WeightedList(', '.join(results[1]))
 
-                for mandatory in mandatory_tags:
-                    if mandatory not in tags:
-                        tags += f', {mandatory}'
+                supplementary_text = ''
 
                 if use_llm:
-                    llm_result = runLlamaPromptWrapper(llm_prompt + f' To assist you, the image is known to contain the following elements: {tags}', sys_message= llm_sysmessage, image = input_image)
-                    tags += f', {llm_result}'
+                    if positive_prompt_without_stem.get_keys():
+                        prompt = llm_prompt + f' To assist you, the image is known to contain the following tags: {positive_prompt_without_stem.to_string_weightless()}.'
+                    else:
+                        prompt = llm_prompt
+                    supplementary_text = llm.runLlamaPromptWrapper(prompt, sys_message = llm_sysmessage, image = input_image).strip()
 
-                positive_string = f'{positive_stem}, {tags}'
-                negative_string = f'{negative_stem}'
+                for mandatory in mandatory_tags:
+                    if '|' in mandatory:
+                        trigger, piece = mandatory.split('|', maxsplit=1)
+                        if trigger in positive_prompt_without_stem:
+                            common.log(f'** mandatory term trigger \'{trigger}\' seen, injecting \'{piece}\'')
+                            positive_prompt_without_stem.parse(piece)
+                    else:
+                        positive_prompt_without_stem.parse(mandatory)
+                
+                # time to tie it all together
+                final_positive_prompt = WeightedList(positive_stem)
+                final_positive_prompt.parse(positive_prompt_without_stem.to_string())
+                final_positive_prompt.consolidate_keys(lambda x: max(x))
+                final_positive_prompt.sort()
+                final_negative_prompt = WeightedList(negative_stem)
+                final_negative_prompt.parse(negative_prompt_without_stem.to_string())
+
+                positive_string = f'{final_positive_prompt.to_string()}'
+                if supplementary_text:
+                    positive_string += f'. {supplementary_text}'
+                negative_string = f'{final_negative_prompt.to_string()}'
 
                 positive_cond = clipEncoderClass.encode(text = positive_string, clip=clip_object)[0]
                 negative_cond = clipEncoderClass.encode(text = negative_string, clip=clip_object)[0]
@@ -306,6 +302,8 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                                     detailer_pipes.extend([
                                         (fdc_model, fdc_clip, fdc_vae, fdc_positive_cond, fdc_negative_cond, '', ultra_provider, None, None, None, None, None, None, None),
                                     ])
+                                if detailer_selector > -1:
+                                    detailer_pipes = [detailer_pipes[detailer_selector]]
                                 for dp_idx, detailer_pipe in enumerate(detailer_pipes):
                                     for d_seed in [seed] + additional_detailer_seeds:
                                         d_seed = common.rseed(d_seed)
@@ -387,7 +385,7 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                             )
                         
                         if save_ora and len(unique_candidates) > 1:
-                            common.save_images_to_ora(sampled_images[-1], detailer_images, f'{output_folder}/ora_{file_stub}_{datetime.now().strftime("%Y-%m-%d-%H%M%S")}_{seed}_{idx}.ora')
+                            common.save_images_to_ora(sampled_images[-1], detailer_images, f'{output_folder}/ora_{file_stub}_{datetime.now().strftime("%Y-%m-%d-%H%M%S")}_{seed}.ora')
 
 def parse_args() -> argparse.ArgumentParser:
     acceptable_checkpoints = list(checkpoints.everything_d.keys()) + ['*']
@@ -403,20 +401,26 @@ def parse_args() -> argparse.ArgumentParser:
     parser.add_argument('--noise', type=float, default=0, help="Noise strength, applied to all embeddings. Default 0.0.")
 
     parser.add_argument('--skip_detailing', action='store_true', default=False, help="Skip detailing. Default is False.")
+    parser.add_argument('--single_detailer', type=int, default=-1, help="Select only a single detailing pipe. Requires knowledge about indexes in code.")
+
+    parser.add_argument('--force_prompt', type=str, default=None, help="Forced prompt, displacing the LLM and tagger.")
+    parser.add_argument('--disable_tagger', action='store_true', default=False, help="Disable the wd14 tagger.")
+    parser.add_argument('--degrade_prompt', type=float, default=0.8, help="If less than 1 only retain this percent of detected tags. Default is 0.8, i.e. discard 2 in every 10 tags. Also shuffles prompt.")
+    parser.add_argument('--banlist', type=str, nargs='*', default=common.tag_banlist, help='Tags that will be excluded from wd14 tagging.')
+
+    parser.add_argument('--use_dtg', action='store_true', default=False, help = "Enable the DTG tag extension LLM.")
+    parser.add_argument('--dtg_rating', default='safe', help="Set desired prompt safety for DTG.")
+    parser.add_argument('--dtg_target', choices=['<|very_short|>', '<|short|>', '<|long|>', '<|very_long|>'], default='<|long|>', help="Set desired prompt length for DTG.")
+    parser.add_argument('--dtg_temperature', type=float, default=0.5, help="Set inference temperature for DTG.")
 
     parser.add_argument('--use_llm', action='store_true', default=False, help="Seek opinion of local LLM on image contents.")
     parser.add_argument('--llm_prompt', type=str, default='Please describe this image.', help="User prompt for local LLM.")
     parser.add_argument('--llm_sysmessage', type=str, default=None, help="A system prompt for the local LLM. If None, a sensible default is provided.")
-    parser.add_argument('--force_prompt', type=str, default=None, help="Forced prompt, displacing the LLM and tagger.")
-
-    parser.add_argument('--degrade_prompt', type=float, default=0.8, help="If less than 1 only retain this percent of detected tags. Default is 0.8, i.e. discard 2 in every 10 tags. Also shuffles prompt.")
 
     parser.add_argument('--skip_original_face', action='store_true', default=False, help="Don't include original face in the outputs. Default is False.")
 
     parser.add_argument('--fd_checkpoint', choices=acceptable_checkpoints, default=None, help='fd_checkpoint - an additional checkpoint only used for face detailing. Defaults to None.')
 
-    parser.add_argument('--disable_tagger', action='store_true', default=False, help="Disable the wd14 tagger.")
-    parser.add_argument('--banlist', type=str, nargs='*', default=common.tag_banlist, help='Tags that will be excluded from wd14 tagging.')
     
     parser.add_argument('--frontload_tags', nargs='+', default=['rating_safe'], help="Frontload tags. Default is ['rating_safe'].")
     parser.add_argument('--frontload_neg', nargs='+', default=[], help="Frontload negative tags. Default is [].")
@@ -440,10 +444,9 @@ def parse_args() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     args = parse_args()
     common.log(args)
-    if args.checkpoints == ['*']:
-        checkpoint_list = [None] # <-- autochoice at runtime
-    else:
-        checkpoint_list = [checkpoints.everything_d[x] for x in args.checkpoints]
+
+    checkpoint_list = [checkpoints.everything_d[x] if x != '*' else None for x in args.checkpoints ]
+
     
     if args.fd_checkpoint:
         fd_checkpoint = checkpoints.everything_d[args.fd_checkpoint]
@@ -469,9 +472,14 @@ if __name__ == "__main__":
         denoise_programs=args.denoise_programs,
         noise=args.noise,
         skip_detailing=args.skip_detailing,
+        detailer_selector=args.single_detailer,
         use_llm=args.use_llm,
         llm_prompt=args.llm_prompt,
         llm_sysmessage=args.llm_sysmessage,
+        use_dtg=args.use_dtg,
+        dtg_rating=args.dtg_rating,
+        dtg_target=args.dtg_target,
+        dtg_temperature=args.dtg_temperature,
         degrade_prompt=args.degrade_prompt,
         skip_original_face=args.skip_original_face,
         fd_checkpoint=fd_checkpoint,
@@ -489,5 +497,3 @@ if __name__ == "__main__":
         holdfile_path=args.hold_file,
         save_ora=args.save_ora
     )
-
-

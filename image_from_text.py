@@ -49,9 +49,11 @@ this_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(this_path)
 import common
 import checkpoints
+import llm
 from common import Silence
+from common import WeightedList
 
-def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (832, 1216), (1216, 832)], rescale=1.0, rescale_denoise=0.4, skip_original_face = False, additional_detailer_seeds = [], skip_detailing = False, detailer_selector = -1, rerun_lora = False, fd_checkpoint = None, frontload_tags = ['rating_safe'], frontload_neg = [], mandatory_tags = [], seeds = [-1], diffusion_start = None, diffusion_stop = None, save_ora = False, output_folder='.', holdfile_path=None):
+def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (832, 1216), (1216, 832)], rescale=1.0, rescale_denoise=0.4, skip_original_face = False, additional_detailer_seeds = [], skip_detailing = False, detailer_selector = -1, use_dtg = False, dtg_rating = 'safe', dtg_target = '<|long|>', dtg_temperature = 0.7, rerun_lora = False, fd_checkpoint = None, frontload_tags = ['rating_safe'], frontload_neg = [], mandatory_tags = [], seeds = [-1], diffusion_start = None, diffusion_stop = None, save_ora = False, output_folder='.', holdfile_path=None):
     with Silence():
         add_extra_model_paths()
         import_custom_and_start()
@@ -83,7 +85,7 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
         # the intermingling of loras and prompts has been a disaster for the human race
         prompt_buckets = {'base': {'loras': [], 'prompts': []}}
         for prompt in input_prompts:
-            stripped_prompt, loras = common.extract_lora_keywords(prompt)
+            positive_prompt, loras = common.extract_lora_keywords(prompt)
             if loras:
                 bucket = '|'.join(f'{x}:{y}:{z}' for x, y, z in loras)
                 if bucket not in prompt_buckets:
@@ -91,8 +93,10 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                 else:
                     prompt_buckets[bucket]['prompts'].append(prompt)
             if not loras or rerun_lora:
-                prompt_buckets['base']['prompts'].append(stripped_prompt)
-
+                prompt_buckets['base']['prompts'].append(positive_prompt)
+        
+        if not prompt_buckets['base']['prompts']:
+            del prompt_buckets['base']
         
         for pb, bucket_prompts in prompt_buckets.items():
             common.log(f'** processing prompts from prompt bucket {pb}')
@@ -101,10 +105,14 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                     checkpoint_tuple = random.choice(list(checkpoints.everything_d.values()))
                 common.log(f'** selected {checkpoint_tuple}')
                 checkpoint_shortname, checkpoint, lora, positive_stem, negative_stem, vae_name = checkpoint_tuple
+
+                positive_stem = WeightedList(positive_stem)
+                negative_stem = WeightedList(negative_stem)
+
                 for cpe in frontload_tags:
-                    positive_stem += f', {cpe}'
+                    positive_stem.parse(cpe)
                 for cpe in frontload_neg:
-                    negative_stem += f', {cpe}'
+                    negative_stem.parse(cpe)
 
                 base_model, clip_object, _ = cplsClass.load_checkpoint(ckpt_name=checkpoint)
                 vae = vaeLoaderClass.load_vae(vae_name=vae_name)[0]
@@ -124,23 +132,46 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                 clip_object.clip_layer(-2)
 
                 # create "empty" conditionings for face detailing
-                positive_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = positive_stem, clip=clip_object)[0], noise)
-                negative_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = negative_stem, clip=clip_object)[0], noise)
+                positive_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = positive_stem.to_string(suppress_lora=True), clip=clip_object)[0], noise)
+                negative_d_cond = common.scramble_embedding(clipEncoderClass.encode(text = negative_stem.to_string(suppress_lora=True), clip=clip_object)[0], noise)
             
                 for (prompt_idx, prompt) in enumerate(bucket_prompts['prompts']):
                     common.log(f'++ prompt {prompt_idx} - {prompt}')
-                    stripped_prompt, loras = common.extract_lora_keywords(prompt)
-                    common.log(f'** stripped prompt was: {stripped_prompt}')
-                    stripped_prompt = f'{positive_stem}, {stripped_prompt}'
-                    prompt_for_meta = f'{positive_stem}, {prompt}'
-                    for q in mandatory_tags:
-                        if q not in stripped_prompt:
-                            stripped_prompt = f'{stripped_prompt}, {q}'
-                            prompt_for_meta = f'{prompt_for_meta}, {q}'
-                    
-                    positive_cond = common.scramble_embedding(clipEncoderClass.encode(text=stripped_prompt, clip=clip_object)[0], noise)
 
+                    positive_prompt_without_stem = WeightedList(prompt)
+                                      
                     for dimensions in sizes:
+                        local_positive_prompt_without_stem = WeightedList(positive_prompt_without_stem)
+                        if use_dtg:
+                            results = llm.runDTGPromptWrapper(
+                                local_positive_prompt_without_stem.get_keys(suppress_lora=True), 
+                                dtg_rating, 
+                                dimensions[0], 
+                                dimensions[1], 
+                                dtg_target, 
+                                dtg_temperature
+                            )
+                            common.log(f'** dtg returned the following tags, which will be added to the originals: {results[2]}')
+                            local_positive_prompt_without_stem.parse(', '.join(results[2]))
+
+                        for mandatory in mandatory_tags:
+                            if '|' in mandatory:
+                                trigger, piece = mandatory.split('|', maxsplit=1)
+                                if trigger in local_positive_prompt_without_stem:
+                                    common.log(f'** mandatory term trigger \'{trigger}\' seen, injecting \'{piece}\'')
+                                    local_positive_prompt_without_stem.parse(piece)
+                            else:
+                                local_positive_prompt_without_stem.parse(mandatory)
+
+                        # final assembly
+                        final_positive_prompt = WeightedList(positive_stem)
+                        final_positive_prompt.parse(local_positive_prompt_without_stem.to_string())
+                        final_positive_prompt.consolidate_keys(lambda x: max(x))
+                        final_positive_prompt.sort()
+                        common.log(f'** positive prompt: {final_positive_prompt.to_string()}')
+
+                        positive_cond = common.scramble_embedding(clipEncoderClass.encode(text=final_positive_prompt.to_string(suppress_lora=True), clip=clip_object)[0], noise)
+
                         input_latent = latentClass.generate(width=dimensions[0], height=dimensions[1], batch_size=1)[0]
                         for seed in seeds:
                             if(diffusion_start and diffusion_stop): common.sleep_while_outside(diffusion_start, diffusion_stop)
@@ -273,8 +304,8 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                                     modelname=checkpoint,
                                     sampler_name="euler_ancestral",
                                     scheduler="normal",
-                                    positive=prompt_for_meta,
-                                    negative=negative_stem,
+                                    positive=final_positive_prompt.to_string(),
+                                    negative=negative_stem.to_string(),
                                     seed_value=seed,
                                     width=out_width,
                                     height=out_height,
@@ -314,6 +345,11 @@ def parse_args():
     parser.add_argument('--single_detailer', type=int, default=-1, help="Select only a single detailing pipe. Requires knowledge about indexes in code.")
     parser.add_argument('--rerun_lora', action='store_true', default=False, help="Rerun LoRA infected prompts without their LoRA. Default is False.")
 
+    parser.add_argument('--use_dtg', action='store_true', default=False, help = "Enable the DTG tag extension LLM.")
+    parser.add_argument('--dtg_rating', default='safe', help="Set desired prompt safety for DTG.")
+    parser.add_argument('--dtg_target', choices=['<|very_short|>', '<|short|>', '<|long|>', '<|very_long|>'], default='<|long|>', help="Set desired prompt length for DTG.")
+    parser.add_argument('--dtg_temperature', type=float, default=0.5, help="Set inference temperature for DTG.")
+
     parser.add_argument('--save_ora', action='store_true', default=False, help="Save ORA file after detailing. Default is False.")
 
     parser.add_argument('--rescale', type=float, default=1.0, help="HRFix. Defaults to 1.0 (disabled).")
@@ -343,10 +379,8 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     common.log(args)
-    if args.checkpoints == ['*']:
-        checkpoint_list = [None] # <-- autochoice at runtime
-    else:
-        checkpoint_list = [checkpoints.everything_d[x] for x in args.checkpoints]
+
+    checkpoint_list = [checkpoints.everything_d[x] if x != '*' else None for x in args.checkpoints ]
     
     if args.fd_checkpoint:
         fd_checkpoint = checkpoints.everything_d[args.fd_checkpoint]
@@ -377,6 +411,10 @@ if __name__ == '__main__':
             skip_detailing=args.skip_detailing,
             detailer_selector=args.single_detailer,
             rerun_lora=args.rerun_lora,
+            use_dtg=args.use_dtg,
+            dtg_rating=args.dtg_rating,
+            dtg_target=args.dtg_target,
+            dtg_temperature=args.dtg_temperature,
             rescale=args.rescale,
             rescale_denoise=args.rescale_denoise,
             fd_checkpoint=fd_checkpoint, 
