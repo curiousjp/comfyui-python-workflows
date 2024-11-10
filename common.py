@@ -30,7 +30,9 @@ TIER_2_TAGS = set([
 ])
 class WeightedList(MutableSequence):
     # class method
-    def _sort_order(t):
+    def _sort_order(x):
+        t, w = x
+        t = t.replace('_', ' ')
         if t in TIER_1_TAGS: return 1
         if t in TIER_2_TAGS: return 2
         return 3
@@ -44,7 +46,7 @@ class WeightedList(MutableSequence):
         if isinstance(p, str):
             self.parse(p)
         if isinstance(p, WeightedList):
-            self.parse(p.to_string())
+            self.extend(p)
 
     def parse(self, input_str):
         # we will normalise the input string to make it a bit simpler to parse
@@ -117,6 +119,9 @@ class WeightedList(MutableSequence):
 
     def insert(self, index, value):
         self.items.insert(index, value)
+    
+    def extend(self, other):
+        self.items.extend(other.items)
 
     def __len__(self):
         return len(self.items)
@@ -128,9 +133,9 @@ class WeightedList(MutableSequence):
     def __repr__(self):
         return self.to_string()
     
-    def sort(self, key = None, reverse = True):
+    def sort(self, key = None, reverse = False):
         if key is None:
-            self.items.sort(key = lambda x: WeightedList._sort_order(x), reverse=reverse)
+            self.items.sort(key = WeightedList._sort_order, reverse=reverse)
         else:
             self.items.sort(key = key, reverse = reverse)
 

@@ -53,7 +53,7 @@ import llm
 from common import Silence
 from common import WeightedList
 
-def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (832, 1216), (1216, 832)], rescale=1.0, rescale_denoise=0.4, skip_original_face = False, additional_detailer_seeds = [], skip_detailing = False, detailer_selector = -1, use_dtg = False, dtg_rating = 'safe', dtg_target = '<|long|>', dtg_temperature = 0.7, rerun_lora = False, fd_checkpoint = None, frontload_tags = ['rating_safe'], frontload_neg = [], mandatory_tags = [], seeds = [-1], diffusion_start = None, diffusion_stop = None, save_ora = False, output_folder='.', holdfile_path=None):
+def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (832, 1216), (1216, 832)], rescale=1.0, rescale_denoise=0.4, skip_original_face = False, additional_detailer_seeds = [], skip_detailing = False, detailer_selector = -1, use_dtg = False, dtg_rating = 'safe', dtg_target = '<|long|>', dtg_temperature = 0.7, banlist = [], rerun_lora = False, fd_checkpoint = None, frontload_tags = ['rating_safe'], frontload_neg = [], mandatory_tags = [], seeds = [-1], diffusion_start = None, diffusion_stop = None, save_ora = False, output_folder='.', holdfile_path=None):
     with Silence():
         add_extra_model_paths()
         import_custom_and_start()
@@ -138,17 +138,22 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                 for (prompt_idx, prompt) in enumerate(bucket_prompts['prompts']):
                     common.log(f'++ prompt {prompt_idx} - {prompt}')
 
-                    positive_prompt_without_stem = WeightedList(prompt)
+                    positive_prompt_without_stem = WeightedList()
+                    for cpe in frontload_tags:
+                        positive_prompt_without_stem.parse(cpe)
+                    positive_prompt_without_stem.parse(prompt)
                                       
                     for dimensions in sizes:
                         local_positive_prompt_without_stem = WeightedList(positive_prompt_without_stem)
                         if use_dtg:
+                            local_positive_prompt_without_stem.sort()
                             results = llm.runDTGPromptWrapper(
                                 local_positive_prompt_without_stem.get_keys(suppress_lora=True), 
                                 dtg_rating, 
                                 dimensions[0], 
                                 dimensions[1], 
                                 dtg_target, 
+                                banlist,
                                 dtg_temperature
                             )
                             common.log(f'** dtg returned the following tags, which will be added to the originals: {results[2]}')
@@ -164,10 +169,10 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                                 local_positive_prompt_without_stem.parse(mandatory)
 
                         # final assembly
+                        local_positive_prompt_without_stem.sort()
                         final_positive_prompt = WeightedList(positive_stem)
-                        final_positive_prompt.parse(local_positive_prompt_without_stem.to_string())
+                        final_positive_prompt.extend(local_positive_prompt_without_stem)
                         final_positive_prompt.consolidate_keys(lambda x: max(x))
-                        final_positive_prompt.sort()
                         common.log(f'** positive prompt: {final_positive_prompt.to_string()}')
 
                         positive_cond = common.scramble_embedding(clipEncoderClass.encode(text=final_positive_prompt.to_string(suppress_lora=True), clip=clip_object)[0], noise)
@@ -234,7 +239,7 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                                 # an additional sd15 face detail if requested
                                 if fd_checkpoint:
                                     detailer_pipes.append(
-                                    (fdc_model, fdc_clip, fdc_vae, fdc_positive_cond, fdc_negative_cond, '', ultra_provider, None, None, None, None, None, None, None),
+                                        (fdc_model, fdc_clip, fdc_vae, fdc_positive_cond, fdc_negative_cond, '', ultra_provider, None, None, None, None, None, None, None),
                                     )
                                 if detailer_selector > -1:
                                     detailer_pipes = [detailer_pipes[detailer_selector]]
@@ -321,7 +326,7 @@ def main(checkpoint_list, input_prompts, noise = 0.0, sizes = [(1024, 1024), (83
                                     images=out_img,
                                 )
 
-                            if save_ora and len(unique) > 1:
+                            if save_ora:
                                 common.save_images_to_ora(sampled_images[-1], detailer_images, f'{output_folder}/ora_t2i_{checkpoint_shortname}_{prompt_idx}_{datetime.now().strftime("%Y-%m-%d-%H%M%S")}_{seed}_{out_image_idx}.ora')
                                 
                 del base_model, clip_object, free_model
@@ -349,6 +354,7 @@ def parse_args():
     parser.add_argument('--dtg_rating', default='safe', help="Set desired prompt safety for DTG.")
     parser.add_argument('--dtg_target', choices=['<|very_short|>', '<|short|>', '<|long|>', '<|very_long|>'], default='<|long|>', help="Set desired prompt length for DTG.")
     parser.add_argument('--dtg_temperature', type=float, default=0.5, help="Set inference temperature for DTG.")
+    parser.add_argument('--banlist', type=str, nargs='*', default=common.tag_banlist, help='Tags that will be excluded from wd14 tagging.')
 
     parser.add_argument('--save_ora', action='store_true', default=False, help="Save ORA file after detailing. Default is False.")
 
@@ -382,8 +388,10 @@ if __name__ == '__main__':
 
     checkpoint_list = [checkpoints.everything_d[x] if x != '*' else None for x in args.checkpoints ]
     
-    if args.fd_checkpoint:
+    if args.fd_checkpoint and args.fd_checkpoint != '*':
         fd_checkpoint = checkpoints.everything_d[args.fd_checkpoint]
+    elif args.fd_checkpoint == '*':
+        fd_checkpoint = random.choice(checkpoints.everything)
     else:
         fd_checkpoint = None
 
@@ -415,6 +423,7 @@ if __name__ == '__main__':
             dtg_rating=args.dtg_rating,
             dtg_target=args.dtg_target,
             dtg_temperature=args.dtg_temperature,
+            banlist=args.banlist,
             rescale=args.rescale,
             rescale_denoise=args.rescale_denoise,
             fd_checkpoint=fd_checkpoint, 

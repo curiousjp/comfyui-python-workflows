@@ -138,7 +138,11 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                 input_image, image_width, image_height = common.scale_image_to_common_size(input_image)
 
                 positive_prompt_without_stem = WeightedList()
+                for cpe in frontload_tags:
+                    positive_prompt_without_stem.parse(cpe)
                 negative_prompt_without_stem = WeightedList()
+                for cpe in frontload_neg:
+                    negative_prompt_without_stem.parse(cpe)
 
                 if use_tagger and not force_prompt:
                     with Silence():
@@ -168,7 +172,8 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                     positive_prompt_without_stem.parse(force_prompt)
 
                 if use_dtg:
-                    results = llm.runDTGPromptWrapper(positive_prompt_without_stem.get_keys(), dtg_rating, image_width, image_height, dtg_target, dtg_temperature)
+                    positive_prompt_without_stem.sort()
+                    results = llm.runDTGPromptWrapper(positive_prompt_without_stem.get_keys(), dtg_rating, image_width, image_height, dtg_target, banlist, dtg_temperature)
                     common.log(f'** dtg returned the following tags, which will replace the originals: {results[1]}')
                     positive_prompt_without_stem = WeightedList(', '.join(results[1]))
 
@@ -191,12 +196,14 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                         positive_prompt_without_stem.parse(mandatory)
                 
                 # time to tie it all together
+                positive_prompt_without_stem.sort()
                 final_positive_prompt = WeightedList(positive_stem)
-                final_positive_prompt.parse(positive_prompt_without_stem.to_string())
+                final_positive_prompt.extend(positive_prompt_without_stem)
                 final_positive_prompt.consolidate_keys(lambda x: max(x))
-                final_positive_prompt.sort()
+                
                 final_negative_prompt = WeightedList(negative_stem)
-                final_negative_prompt.parse(negative_prompt_without_stem.to_string())
+                final_negative_prompt.extend(negative_prompt_without_stem)
+                final_negative_prompt.consolidate_keys(lambda x: max(x))
 
                 positive_string = f'{final_positive_prompt.to_string()}'
                 if supplementary_text:
@@ -384,7 +391,7 @@ def main(checkpoint_list, input_files, force_prompt = None, from_step = [0], den
                                 images=output_image,
                             )
                         
-                        if save_ora and len(unique_candidates) > 1:
+                        if save_ora:
                             common.save_images_to_ora(sampled_images[-1], detailer_images, f'{output_folder}/ora_{file_stub}_{datetime.now().strftime("%Y-%m-%d-%H%M%S")}_{seed}.ora')
 
 def parse_args() -> argparse.ArgumentParser:
@@ -448,8 +455,10 @@ if __name__ == "__main__":
     checkpoint_list = [checkpoints.everything_d[x] if x != '*' else None for x in args.checkpoints ]
 
     
-    if args.fd_checkpoint:
+    if args.fd_checkpoint and args.fd_checkpoint != '*':
         fd_checkpoint = checkpoints.everything_d[args.fd_checkpoint]
+    elif args.fd_checkpoint == '*':
+        fd_checkpoint = random.choice(checkpoints.everything)
     else:
         fd_checkpoint = None
 

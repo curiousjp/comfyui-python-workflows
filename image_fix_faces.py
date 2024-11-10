@@ -261,7 +261,7 @@ def main(checkpoint_list, input_filenames, input_prompts = [None], segs=['auto']
                         images=out_img,
                     )
 
-                if save_ora and len(unique) > 1:
+                if save_ora:
                     common.save_images_to_ora(input_image, detailer_images, f'{output_folder}/ora_t2i_{checkpoint_shortname}_{if_idx}_{datetime.now().strftime("%Y-%m-%d-%H%M%S")}.ora')
                                 
             del base_model, clip_object

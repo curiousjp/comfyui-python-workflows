@@ -52,7 +52,7 @@ def runLlamaPromptWrapper(prompt, sys_message = None, image = None):
         runLlamaPromptThread
     )
 
-def createDTGPrompt(tags: list, dtg_rating = 'safe', artist = '<|empty|>', characters = '<|empty|>', copyrights = '<|empty|>', width = 1.0, height = 1.0, target = '<|very_long|>', temperature = 0.7):
+def createDTGPrompt(tags: list, dtg_rating = 'safe', artist = '<|empty|>', characters = '<|empty|>', copyrights = '<|empty|>', width = 1.0, height = 1.0, target = '<|very_long|>', banlist = common.tag_banlist, temperature = 0.7):
     tags = [t.strip().replace('_', ' ') for t in tags if t.strip()]
     target_tag_count = {'<|very_short|>': 10, '<|short|>': 20, '<|long|>': 40, '<|very_long|>': 60}.get(target, 40)
     prompt = f'''quality: masterpiece
@@ -63,7 +63,7 @@ copyrights: {copyrights}
 aspect ratio: {width / height:.1f}
 target: {target}
 general: {', '.join(tags)}<|input_end|>'''
-    messages = {'prompt': prompt, 'tags': tags, 'target_tag_count': target_tag_count, 'temperature': temperature}
+    messages = {'prompt': prompt, 'tags': tags, 'target_tag_count': target_tag_count, 'temperature': temperature, 'banlist': banlist}
     return messages
 
 def runDTGThread(messages, connection):
@@ -80,6 +80,7 @@ def runDTGThread(messages, connection):
     additions_tags = []
     text = messages['prompt']
     temperature = messages['temperature']
+    banlist = messages['banlist']
 
     attempts = 10
 
@@ -99,7 +100,7 @@ def runDTGThread(messages, connection):
         def process_tag(x):
             x = x.strip()
             x = re.sub(r'(?<!\\)([()])', r'\\\1', x)
-            if x in common.tag_banlist or x.replace(' ', '_') in common.tag_banlist:
+            if x in banlist or x.replace(' ', '_') in banlist:
                 return None 
             return x
 
@@ -125,8 +126,8 @@ def runDTGThread(messages, connection):
     connection.send(result_tuple)
     connection.close()
 
-def runDTGPromptWrapper(tags: list, dtg_rating, image_width, image_height, target, temperature):
+def runDTGPromptWrapper(tags: list, dtg_rating, image_width, image_height, target, banlist, temperature):
     return runWrappedLLMFunction(
-        createDTGPrompt(tags, dtg_rating = dtg_rating, width = image_width, height = image_height, target = target, temperature = temperature),
+        createDTGPrompt(tags, dtg_rating = dtg_rating, width = image_width, height = image_height, target = target, banlist = banlist, temperature = temperature),
         runDTGThread
     )
