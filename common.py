@@ -171,9 +171,6 @@ class Silence:
         sys.stdout = self._stdout
         sys.stderr = self._stderr
 
-# data for use with the tagging node - you will need to customise this
-tag_banlist = ['english_text',]
-
 # functions for adding noise to embeddings
 def scramble_embedding(clip_output, noise):
     if noise == 0:

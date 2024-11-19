@@ -1,3 +1,6 @@
+# data for use with the tagging node - you will need to customise this
+tag_banlist = ['english_text',]
+
 # lists of available checkpoints
 # you will need to customise this file to match your local setup
 

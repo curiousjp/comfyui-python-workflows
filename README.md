@@ -3,6 +3,9 @@
 
  These scripts reflect certain assumptions about my own workflows (including that they are very SDXL focused) - they may not match up with your needs exactly, but being released under [the MIT License](LICENSE), you should feel free to modify them to suit your needs. At a minimum however, you should look at `checkpoints.py` to set the paths for your checkpoints, and if you use the tagging functionality in `image_remaker.py`, you will probably want to consider setting the list of banned tags in `common.py` depending on what your preferred tagging models tend to overdetect / what you do not want to see.
 
+# recent changes:
+The `tag_banlist` configuration item has moved from `common.py` to `checkpoints.py`. Although these are not technically checkpoint related, it was decided to try and centralise all of the file related configuration in one file.
+
 # dependencies
 These scripts assume the presence of certain ComfyUI nodes, which they load as part of their execution. These include:
 * [Impact Pack](https://github.com/ltdrdata/ComfyUI-Impact-Pack)
