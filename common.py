@@ -21,6 +21,9 @@ TIER_1_TAGS = set([
     'masterpiece', 'best quality', 'great quality', 'good quality', 'normal quality', 'low quality', 'worse quality',
     'very aesthetic', 'aesthetic', 'displeasing', 'very displeasing',
     'newest', 'recent', 'mid', 'early', 'old',
+    'score 9', 'score 8 up', 'score 7 up', 'score 6 up', 'score 5 up', 'score 4 up',
+    'source pony', 'source furry', 'source anime', 'source cartoon',
+    'rating safe', 'rating explicit', 'rating questionable',
 ])
 TIER_2_TAGS = set([
     '1girl', '2girls', '3girls', '4girls', '5girls', '6+girls', 'multiple girls',
@@ -36,28 +39,60 @@ class WeightedList(MutableSequence):
         if t in TIER_1_TAGS: return 1
         if t in TIER_2_TAGS: return 2
         return 3
+
+    def _restorePonyTags(x):
+        if x.startswith('rating ') or x.startswith('score '):
+            return x.replace(' ', '_')
+        return x
     
-    def __init__(self, p = None, use_underscore = True):
+    def _process_tag(self, x):
+        if self._use_underscore:
+            return WeightedList._restorePonyTags(x.replace(' ', '_'))
+        return WeightedList._restorePonyTags(x.replace('_', ' '))
+
+    def __init__(self, p = None, use_underscore = None):
         self.items = []  # Store tuples of (key, weight)
-        if use_underscore:
-            self._use_underscore_l = lambda x: x.replace(' ', '_')
-        else:
-            self._use_underscore_l = lambda x: x.replace('_', ' ')
+
+        if isinstance(p, WeightedList):
+            use_underscore = p._use_underscore
+        self._use_underscore = use_underscore or False
+
         if isinstance(p, str):
             self.parse(p)
-        if isinstance(p, WeightedList):
+        elif isinstance(p, WeightedList):
             self.extend(p)
+        else:
+            pass
 
     def parse(self, input_str):
         # we will normalise the input string to make it a bit simpler to parse
         modified = input_str.strip().replace('\\(', 'TAGOPENBRACKET').replace('\\)', 'TAGCLOSEBRACKET')
         modified = modified.replace('[', '(')
-        modified = re.sub(r'(\D)\]', r'\1:0.9)', modified)
-        modified = re.sub(r'(\D)\)', r'\1:1.1)', modified)
+        while re.search(r'(\D)\]', modified):
+            modified = re.sub(r'(\D)\]', r'\1:0.9)', modified)
+        while re.search(r'(\D)\)', modified):
+            modified = re.sub(r'(\D)\)', r'\1:1.1)', modified)
         if modified.count('(') != modified.count(')'):
             raise ValueError(f'unbalanced parentheses in modified prompt string: {modified}')
         # Start parsing with an implicit outermost weight of 1
         self._parse_with_weight(modified, 1)
+
+    def erode(self, preserve_pct = 0.8, preserve_sort_thresh = 3):
+        if preserve_pct >= 1:
+            return
+        vulnerable_tags = [x[0] for x in [(y[0], WeightedList._sort_order(y)) for y in self.items] if x[1] >= preserve_sort_thresh]
+        o_len = len(vulnerable_tags)
+        e_len = int(round(o_len * preserve_pct))
+        if e_len < o_len:
+            log(f'** eroding tags from {o_len} to {e_len}')
+            log(f'** original tags were: {vulnerable_tags}')
+            indexes_to_remove = set(random.sample(range(o_len), o_len - e_len))
+            tags_to_remove = [x for i,x in enumerate(vulnerable_tags) if i in indexes_to_remove]
+            log(f'** removing: {tags_to_remove}')
+            self.items = [x for x in self.items if x[0] not in tags_to_remove]
+
+    def shake(self, strength):
+        self.items = [(s, round(v + random.gauss(0, strength), 2)) for s, v in self.items]
 
     def _parse_with_weight(self, input_str, outer_weight):
         while '(' in input_str:
@@ -88,7 +123,7 @@ class WeightedList(MutableSequence):
 
         # at this point, input_string should be pure text with no groups
         tokens = [x.strip(',').strip().replace('TAGOPENBRACKET', '\\(').replace('TAGCLOSEBRACKET', '\\)') for x in input_str.split(',')]
-        tokens = [self._use_underscore_l(x) for x in tokens if x]
+        tokens = [self._process_tag(x) for x in tokens if x]
         for token in tokens:
             self.append((token, outer_weight))
 
@@ -127,7 +162,7 @@ class WeightedList(MutableSequence):
         return len(self.items)
 
     def __contains__(self, key):
-        key = self._use_underscore_l(key)
+        key = self._process_tag(key)
         return any(item[0] == key for item in self.items)
 
     def __repr__(self):
@@ -145,7 +180,7 @@ class WeightedList(MutableSequence):
             if suppress_lora and key.startswith('<lora:'):
                 continue
             if weight != 1:
-                parts.append(f'({key}:{weight})')
+                parts.append(f'({key}:{round(weight,2)})')
             else:
                 parts.append(key)
         return ', '.join(parts).strip().strip('.,')

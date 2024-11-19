@@ -52,7 +52,7 @@ def runLlamaPromptWrapper(prompt, sys_message = None, image = None):
         runLlamaPromptThread
     )
 
-def createDTGPrompt(tags: list, dtg_rating = 'safe', artist = '<|empty|>', characters = '<|empty|>', copyrights = '<|empty|>', width = 1.0, height = 1.0, target = '<|very_long|>', banlist = common.tag_banlist, temperature = 0.7):
+def createDTGPrompt(tags: list, dtg_rating = 'safe', artist = '<|empty|>', characters = '<|empty|>', copyrights = '<|empty|>', width = 1.0, height = 1.0, target = '<|very_long|>', banlist = checkpoints.tag_banlist, temperature = 0.7):
     tags = [t.strip().replace('_', ' ') for t in tags if t.strip()]
     target_tag_count = {'<|very_short|>': 10, '<|short|>': 20, '<|long|>': 40, '<|very_long|>': 60}.get(target, 40)
     prompt = f'''quality: masterpiece
