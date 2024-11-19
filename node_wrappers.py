@@ -129,7 +129,7 @@ def makeLoraBuckets(prompt_list, rerun_lora = False):
 def runDetailerPipe(pipe, index, image, seed, args):
     fdpClass = NODE_CLASS_MAPPINGS['FaceDetailerPipe']()
     if(args.diffusion_start and args.diffusion_stop): common.sleep_while_outside(args.diffusion_start, args.diffusion_stop)
-    common.sleep_while_holdfile(args.holdfile_path)
+    common.sleep_while_holdfile(args.hold_file)
     seed = common.rseed(seed)
     common.log(f'** running detailer pipe {index} with seed {seed}')
     return fdpClass.doit(
@@ -137,11 +137,11 @@ def runDetailerPipe(pipe, index, image, seed, args):
         guide_size_for=True,
         max_size=1024,
         seed=seed,
-        steps=20,
+        steps=args.steps,
         cfg=7.5,
         sampler_name="euler_ancestral",
         scheduler="normal",
-        denoise=0.35,
+        denoise=args.denoise,
         feather=5,
         noise_mask=True,
         force_inpaint=False,
@@ -156,7 +156,7 @@ def runDetailerPipe(pipe, index, image, seed, args):
         sam_mask_hint_use_negative="False",
         drop_size=10,
         refiner_ratio=0.2,
-        cycle=2,
+        cycle=args.cycles,
         inpaint_model=False,
         noise_mask_feather=0,
         image=image,
