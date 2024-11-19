@@ -166,7 +166,7 @@ def runDetailerPipe(pipe, index, image, seed, args):
 def runBasicPipe(pipe, index, image, segments, seed, args, wildcard = ''):
     fdpClass = NODE_CLASS_MAPPINGS['DetailerForEachPipe']()
     if(args.diffusion_start and args.diffusion_stop): common.sleep_while_outside(args.diffusion_start, args.diffusion_stop)
-    common.sleep_while_holdfile(args.holdfile_path)
+    common.sleep_while_holdfile(args.hold_file)
     common.log(f'** running detailer pipe {index} with seed {seed}')
     if(wildcard):
         common.log(f'** wildcard is:\n{wildcard}')
