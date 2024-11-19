@@ -187,7 +187,8 @@ def main(args):
                     basic_pipe = (model_object, clip_object, vae, positive_d_cond, negative_d_cond)
                     detailer_images = []
                     for wildcard_index, wildcard in enumerate(wildcards):
-                        detailer_images.extend([(x, wildcard, runBasicPipe(basic_pipe, wildcard_index, input_image, segments, x, args, wildcard)) for x in args.seeds])
+                        # need to force evaluation of -1 seeds early as I put them in the tuple at this point
+                        detailer_images.extend([(x, wildcard, runBasicPipe(basic_pipe, wildcard_index, input_image, segments, x, args, wildcard)) for x in [common.rseed(s) for s in args.seeds]])
 
                     common.log(f'** writing {len(detailer_images)} images')
                     for (output_index, output_tuple) in enumerate(detailer_images):
