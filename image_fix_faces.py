@@ -115,6 +115,9 @@ def main(args):
             common.log(f'** working on image {input_file_index}, {input_filename}')
             input_image, metadata = common.load_image_as_image_tensor(input_filename)
 
+            if args.flip_vertical:
+                input_image = torch.flip(input_image, dims=[1])
+
             # the segment list starts off with a "bounding box" of sorts of the image dimensions,
             # then a list of the specific segments we wish to detail. this list will be embedded
             # in a larger structure
@@ -130,7 +133,7 @@ def main(args):
                 if not input_prompt or input_prompt == 'auto':
                     continue
                 input_prompt_chunks = input_prompt.split('|')
-                wildcard_body = '[ASC]'
+                wildcard_body = '[CONCAT][ASC]'
                 for input_prompt_chunk in input_prompt_chunks:
                     positive_prompt_without_stem = WeightedList()
                     for x in args.frontload_tags:
@@ -193,6 +196,9 @@ def main(args):
                     common.log(f'** writing {len(detailer_images)} images')
                     for (output_index, output_tuple) in enumerate(detailer_images):
                         detailer_seed, detailer_wildcard, output_image = output_tuple
+                        if args.flip_vertical:
+                            output_image = torch.flip(output_image, dims=[1])
+
                         # half of this metadata is wrong but a1111 doesn't really understand multistage generation
                         out_height = output_image.shape[1]
                         out_width = output_image.shape[2]
@@ -235,6 +241,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoints', nargs='+', choices=acceptable_checkpoints, default=['*'], help="List of checkpoints. Default is ['*'].")
     parser.add_argument('--input_filenames', type=common.args_valid_file_path, nargs='+', help="List of images to process.")
+
+    parser.add_argument('--flip_vertical', action='store_true', default=False, help="Flip image vertically before detecting / detailing, and then back again before saving. Can help with detailing upside down faces.")
 
     parser.add_argument('--use_freeu', action='store_true', default=False, help='Enable freeU patching of model.')
     parser.add_argument('--freeu_b1', type=float, default=1.3)
