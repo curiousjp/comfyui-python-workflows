@@ -87,7 +87,11 @@ def main(args):
                         final_positive_prompt.extend(positive_prompt_without_stem)
                         final_positive_prompt.consolidate_keys(lambda x: max(x))
                         common.log(f'** positive prompt: {final_positive_prompt.to_string()}')
-                        positive_cond = common.scramble_embedding(clipEncoderClass.encode(text=final_positive_prompt.to_string(suppress_lora=True), clip=clip_object)[0], args.noise)
+                        final_positive_string = final_positive_prompt.to_string(suppress_lora=True)
+                        if args.supplementary_text:
+                            common.log(f'** supplementary text: {args.supplementary_text}')
+                            final_positive_string += f'. {args.supplementary_text}'
+                        positive_cond = common.scramble_embedding(clipEncoderClass.encode(text=final_positive_string, clip=clip_object)[0], args.noise)
 
                         input_latent = latentClass.generate(width=dimensions[0], height=dimensions[1], batch_size=1)[0]
 
@@ -146,7 +150,7 @@ def main(args):
                                     modelname=checkpoint,
                                     sampler_name="euler_ancestral",
                                     scheduler="normal",
-                                    positive=final_positive_prompt.to_string(),
+                                    positive=final_positive_string,
                                     negative=negative_stem.to_string(),
                                     seed_value=seed,
                                     width=image_data.shape[2],
@@ -171,7 +175,7 @@ def main(args):
                 torch.cuda.empty_cache()
 
 def parse_args():
-    acceptable_checkpoints = list(checkpoints.everything_d.keys()) + ['*']
+    acceptable_checkpoints = list(checkpoints.everything_d.keys()) + ['*', '!']
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoints', nargs='+', choices=acceptable_checkpoints, default=['*'], help="List of checkpoints. Default is ['*'].")
@@ -185,6 +189,8 @@ def parse_args():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--prompts', nargs='+', help="List of prompts")
     group.add_argument('--prompt_file', type=common.args_read_prompts_from_file, help="File with prompts (one per line)")
+
+    parser.add_argument('--supplementary_text', type=str, default='', help="A supplementary post prompt added after prompt generation.")
 
     parser.add_argument('--sizes', nargs='+', type=common.args_parse_int_tuple, default=[(1024, 1024), (832, 1216), (1216, 832)], help="List of sizes as 'width,height'. Default is [(1024,1024), (832,1216), (1216,832)]")
 
@@ -234,7 +240,10 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
 
-    args.checkpoint_list = [checkpoints.everything_d[x] if x != '*' else random.choice(checkpoints.everything) for x in args.checkpoints]
+    if args.checkpoints == ['!']:
+        args.checkpoint_list = checkpoints.everything_d.values()
+    else:
+        args.checkpoint_list = [checkpoints.everything_d[x] if x != '*' else random.choice(checkpoints.everything) for x in args.checkpoints]
     
     if args.fd_checkpoint and args.fd_checkpoint != '*':
         fd_checkpoint_tuple = checkpoints.everything_d[args.fd_checkpoint]
